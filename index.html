@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Elasticsearch Profile Flame Graph</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        #flamegraph {
+            width: 100%;
+            height: 500px;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .node {
+            cursor: pointer;
+        }
+        .node rect {
+            stroke: #fff;
+            stroke-width: 1px;
+        }
+        .node text {
+            font-size: 10px;
+            fill: #fff;
+        }
+        .tooltip {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            max-width: 300px;
+            pointer-events: none;
+        }
+        #dataInput {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 10px;
+        }
+        #visualizeButton {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Dynamic Elasticsearch Profile Flame Graph</h1>
+    <textarea id="dataInput" placeholder="Paste your Elasticsearch profile data here (JSON format)"></textarea>
+    <button id="visualizeButton">Visualize</button>
+    <div id="flamegraph"></div>
+
+    <script>
+        function createFlameGraph(data) {
+            // Clear previous graph
+            d3.select("#flamegraph").selectAll("*").remove();
+
+            if (!data || Object.keys(data).length === 0) {
+                d3.select("#flamegraph")
+                    .append("text")
+                    .attr("x", 10)
+                    .attr("y", 30)
+                    .text("No data available. Please provide valid Elasticsearch profile data.");
+                return;
+            }
+
+            const margin = {top: 20, right: 20, bottom: 20, left: 20};
+            const width = document.getElementById('flamegraph').offsetWidth - margin.left - margin.right;
+            const height = document.getElementById('flamegraph').offsetHeight - margin.top - margin.bottom;
+
+            const svg = d3.select("#flamegraph")
+                .append("svg")
+                .attr("width", width + margin.left + margin.right)
+                .attr("height", height + margin.top + margin.bottom)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const tooltip = d3.select("body").append("div")
+                .attr("class", "tooltip")
+                .style("opacity", 0);
+
+            function processData(node, depth = 0) {
+                let children = node.children || [];
+                let time = parseFloat(node.time_in_nanos) / 1e6; // Convert to milliseconds
+
+                let result = {
+                    name: node.type || node.description,
+                    value: time,
+                    children: children.map(child => processData(child, depth + 1)),
+                    depth: depth,
+                    data: node
+                };
+
+                return result;
+            }
+
+            const root = d3.hierarchy(processData(data.shards[0].searches[0].query[0]))
+                .sum(d => d.value)
+                .sort((a, b) => b.value - a.value);
+
+            const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+
+            const partition = d3.partition()
+                .size([width, height])
+                .padding(1)
+                .round(true);
+
+            partition(root);
+
+            const nodes = svg.selectAll("g")
+                .data(root.descendants())
+                .enter()
+                .append("g")
+                .attr("class", "node")
+                .attr("transform", d => `translate(${d.y0},${d.x0})`);
+
+            nodes.append("rect")
+                .attr("width", d => d.y1 - d.y0)
+                .attr("height", d => d.x1 - d.x0)
+                .attr("fill", d => colorScale(d.data.name))
+                .on("mouseover", function(event, d) {
+                    const tooltipContent = `
+                        <strong>${d.data.name}</strong><br>
+                        Type: ${d.data.data.type || 'N/A'}<br>
+                        Description: ${d.data.data.description || 'N/A'}<br>
+                        Time: ${d.data.value.toFixed(2)}ms<br>
+                        ${d.data.data.time ? `Time (original): ${d.data.data.time}<br>` : ''}
+                        ${d.data.data.time_in_nanos ? `Time in nanos: ${d.data.data.time_in_nanos}<br>` : ''}
+                        ${d.children ? `Children: ${d.children.length}` : 'Leaf node'}
+                    `;
+                    
+                    tooltip.transition()
+                        .duration(200)
+                        .style("opacity", .9);
+                    tooltip.html(tooltipContent)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function(d) {
+                    tooltip.transition()
+                        .duration(500)
+                        .style("opacity", 0);
+                });
+
+            nodes.append("text")
+                .attr("dx", 4)
+                .attr("dy", 14)
+                .text(d => d.data.name)
+                .style("fill", "white")
+                .style("font-size", "10px")
+                .style("pointer-events", "none")
+                .each(function(d) {
+                    let self = d3.select(this),
+                        textLength = self.node().getComputedTextLength(),
+                        text = self.text();
+                    while (textLength > (d.y1 - d.y0) && text.length > 0) {
+                        text = text.slice(0, -1);
+                        self.text(text + '...');
+                        textLength = self.node().getComputedTextLength();
+                    }
+                });
+        }
+
+        function preprocessJSON(input) {
+            // Remove line breaks and extra spaces
+            let processed = input.replace(/\s+/g, ' ');
+            
+            // Handle multi-line strings
+            processed = processed.replace(/"""[\s\S]*?"""/g, function(match) {
+                // Escape quotes and remove newlines
+                return JSON.stringify(match.slice(3, -3).replace(/\n/g, ' '));
+            });
+
+            // Handle single-line strings with unescaped quotes
+            processed = processed.replace(/"([^"]*)":/g, function(match, p1) {
+                return '"' + p1.replace(/"/g, '\\"') + '":';
+            });
+
+            return processed;
+        }
+
+        document.getElementById('visualizeButton').addEventListener('click', function() {
+            const inputData = document.getElementById('dataInput').value;
+            try {
+                const processedData = preprocessJSON(inputData);
+                const esData = JSON.parse(processedData);
+                const esProfileData = esData.profile
+                createFlameGraph(esProfileData);
+            } catch (error) {
+                alert('Invalid JSON data. Please check your input and try again.');
+                console.error('Error parsing JSON:', error);
+            }
+        });
+    </script>
+</body>
+</html>

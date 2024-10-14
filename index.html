@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dynamic Elasticsearch Profile Flame Graph</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -45,7 +46,7 @@
             height: 200px;
             margin-bottom: 10px;
         }
-        #visualizeButton {
+        #visualizeButton, #linkButton {
             padding: 10px 20px;
             font-size: 16px;
             cursor: pointer;
@@ -56,6 +57,7 @@
     <h1>Dynamic Elasticsearch Profile Flame Graph</h1>
     <textarea id="dataInput" placeholder="Paste your Elasticsearch profile data here (JSON format)"></textarea>
     <button id="visualizeButton">Visualize</button>
+    <button id="linkButton">Link</button>
     <div id="flamegraph"></div>
 
     <script>
@@ -109,7 +111,7 @@
             const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
 
             const partition = d3.partition()
-                .size([width, height])
+                .size([height, width])
                 .padding(1)
                 .round(true);
 
@@ -198,6 +200,33 @@
                 alert('Invalid JSON data. Please check your input and try again.');
                 console.error('Error parsing JSON:', error);
             }
+        });
+    </script>
+
+    <script>
+        const hash = window.location.hash.substring(1);
+        if (hash) {
+            try {
+                const params = new URLSearchParams(hash);
+                const base64Data = params.get('q');
+
+                document.getElementById('dataInput').value = LZString.decompressFromBase64(base64Data);
+                document.getElementById('visualizeButton').click();
+            } catch (error) {
+                console.error('Error decoding text:', error);
+                document.getElementById('dataInput').value = 'Error: Unable to decode text';
+            }
+        }
+    </script>
+
+    <script>
+        document.getElementById('linkButton').addEventListener('click', function() {
+            const inputData = document.getElementById('dataInput').value;
+            const compressedData = LZString.compressToBase64(inputData);
+            const encodedData = encodeURIComponent(compressedData);
+            const url = `${window.location.origin}${window.location.pathname}#q=${encodedData}`;
+
+            open(url, '_blank');
         });
     </script>
 </body>
